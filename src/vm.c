@@ -322,7 +322,7 @@ copyuvm(pde_t *pgdir, uint sz)
 
   if((d = setupkvm()) == 0)
     return 0;
-  for(i = 0; i < sz; i += PGSIZE){
+  for(i = PGSIZE; i < sz; i += PGSIZE){
     if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
       panic("copyuvm: pte should exist");
     if(!(*pte & PTE_P))
@@ -382,6 +382,79 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
     buf += n;
     va = va0 + PGSIZE;
   }
+  return 0;
+}
+
+
+int
+mprotect(void *addr, int len){
+  struct proc *curproc = myproc();
+  int i;
+  pte_t *pte;
+
+  if((uint) addr % PGSIZE != 0){
+    panic("mprotect: addr must be page aligned");
+    return -1;
+  }
+
+  if(len <= 0 || ((uint) addr + len * PGSIZE) > curproc->sz){
+    panic("mprotect: addr must be in range");
+    return -1;
+  }
+
+  for(i = (uint) addr; i < ((uint) addr + len * PGSIZE); i += PGSIZE){
+    pte = walkpgdir(curproc->pgdir, (void *) i, 0);
+
+    if(!(*pte & PTE_P)){
+      panic("mprotect: page not present");
+    }
+    if(*pte & PTE_U){
+      panic("mprotect: page for kernel use only");
+    }
+    
+    if(pte){
+      *pte &= ~PTE_W;
+    } else {
+      return -1;
+    }
+  }
+  lcr3(V2P(curproc->pgdir)); //flush TLB 
+  return 0;
+}
+
+int
+munprotect(void *addr, int len){
+  struct proc *curproc = myproc();
+  int i;
+  pte_t *pte;
+
+  if((uint) addr % PGSIZE != 0){
+    panic("mprotect: addr must be page aligned");
+    return -1;
+  }
+
+  if(len <= 0 || ((uint) addr + len * PGSIZE) > curproc->sz){
+    panic("mprotect: addr must be in range");
+    return -1;
+  }
+
+  for(i = (uint) addr; i < ((uint) addr + len * PGSIZE); i += PGSIZE){
+    pte = walkpgdir(curproc->pgdir, (void *) i, 0);
+
+    if(!(*pte & PTE_P)){
+      panic("mprotect: page not present");
+    }
+    if(*pte & PTE_U){
+      panic("mprotect: page for kernel use only");
+    }
+    
+    if(pte){
+      *pte |= ~PTE_W;
+    } else {
+      return -1;
+    }
+  }
+  lcr3(V2P(curproc->pgdir)); //flush TLB 
   return 0;
 }
 
