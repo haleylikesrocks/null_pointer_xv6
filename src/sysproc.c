@@ -92,22 +92,23 @@ sys_uptime(void)
 
 int
 sys_mprotect(void){
-  int d;
-  int n = 0;
-
-  if(argint(0, &d) < 0 || argint(1, &n) < 0){
+  void *addr;
+  int len = 0;
+  cprintf("we have reached sysproc \n");
+  if(argptr(0, (void*)&addr, sizeof(void*)) < 0 || argint(1, &len) < 0){
     return(-1);
   }
-  return mprotect((void *)d, n);
+
+  return mprotect(addr, len);
 }
 
 int
 sys_munprotect(void){
-  int d;
-  int n = 0;
-
-  if(argint(0, &d) < 0 || argint(1, &n) < 0){
+  void *addr;
+  int len = 0;
+  cprintf("we have reached sysproc \n");
+  if(argptr(0, (void*)&addr, sizeof(void*)) < 0 || argint(1, &len) < 0){
     return(-1);
   }
-  return munprotect((void *)d, n);
+  return munprotect(addr, len);
 }
