@@ -542,12 +542,12 @@ mprotect(void *addr, int len){
   cprintf("we reach vm and %d is the lengths \n", len);
 
   if((uint) addr % PGSIZE != 0){
-    panic("mprotect: addr must be page aligned");
+    // panic("mprotect: addr must be page aligned");
     return -1;
   }
 
   if(len <= 0 || ((uint) addr + len * PGSIZE) > curproc->sz){
-    panic("mprotect: addr must be in range");
+    // panic("mprotect: addr must be in range");
     return -1;
   }
 
@@ -555,11 +555,13 @@ mprotect(void *addr, int len){
     pte = walkpgdir(curproc->pgdir, (void *) i, 0);
 
     if(!(*pte & PTE_P)){
-      panic("mprotect: page not present");
+      // panic("mprotect: page not present");
+      return -1;
     }
-    if(*pte & PTE_U){
-      panic("mprotect: page for kernel use only");
-    }
+    // if(*pte & PTE_U){
+    //   // panic("mprotect: page for kernel use only");
+    //   return -1;
+    // }
     
     if(pte){
       *pte &= ~PTE_W;
@@ -578,29 +580,29 @@ munprotect(void *addr, int len){
   pte_t *pte;
 
   if((uint) addr % PGSIZE != 0){
-    panic("mprotect: addr must be page aligned");
+    // panic("mprotect: addr must be page aligned");
     return -1;
   }
 
-  if(len <= 0 || ((uint) addr + len * PGSIZE + PGSIZE) > curproc->sz){
-    panic("mprotect: addr must be in range");
+  if(len <= 0 || ((uint) addr + len * PGSIZE) > curproc->sz){
+    // panic("mprotect: addr must be in range");
     return -1;
   }
 
-  for(i = (uint) addr; i < ((uint) addr + len * PGSIZE + PGSIZE); i += PGSIZE){
+  for(i = (uint) addr; i < ((uint) addr + len * PGSIZE); i += PGSIZE){
     pte = walkpgdir(curproc->pgdir, (void *) i, 0);
 
     if(!(*pte & PTE_P)){
-      panic("mprotect: page not present");
+      // panic("mprotect: page not present");
       return -1;
     }
-    if(*pte & PTE_U){
-      panic("mprotect: page for kernel use only");
-      return -1;
-    }
+    // if(*pte & PTE_U){
+    //   // panic("mprotect: page for kernel use only");
+    //   return -1;
+    // }
     
     if(pte){
-      *pte |= ~PTE_W;
+      *pte |= PTE_W;
     } else {
       return -1;
     }
