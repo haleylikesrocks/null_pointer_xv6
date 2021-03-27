@@ -1,0 +1,356 @@
+diff -ruN src/defs.h src-finished/defs.h
+--- src/defs.h	2019-09-25 22:28:17.000000000 -0500
++++ src-finished/defs.h	2021-03-25 16:13:46.488239000 -0500
+@@ -120,6 +120,8 @@
+ int             wait(void);
+ void            wakeup(void*);
+ void            yield(void);
++int             mprotect(void *addr, int len);
++int             munprotect(void *addr, int len);
+ 
+ // swtch.S
+ void            swtch(struct context**, struct context*);
+@@ -185,6 +187,7 @@
+ void            switchkvm(void);
+ int             copyout(pde_t*, uint, void*, uint);
+ void            clearpteu(pde_t *pgdir, char *uva);
++pte_t*          walkpgdir(pde_t *pgdir, const void *va, int alloc);
+ 
+ // number of elements in fixed-size array
+ #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
+diff -ruN src/exec.c src-finished/exec.c
+--- src/exec.c	2019-09-25 22:28:17.000000000 -0500
++++ src-finished/exec.c	2021-03-25 12:13:43.398064000 -0500
+@@ -39,7 +39,7 @@
+     goto bad;
+ 
+   // Load program into memory.
+-  sz = 0;
++  sz = PGSIZE;
+   for(i=0, off=elf.phoff; i<elf.phnum; i++, off+=sizeof(ph)){
+     if(readi(ip, (char*)&ph, off, sizeof(ph)) != sizeof(ph))
+       goto bad;
+diff -ruN src/Makefile src-finished/Makefile
+--- src/Makefile	2020-02-18 20:04:22.000000000 -0600
++++ src-finished/Makefile	2021-03-25 12:12:46.133444000 -0500
+@@ -146,7 +146,7 @@
+ ULIB = ulib.o usys.o printf.o umalloc.o
+ 
+ _%: %.o $(ULIB)
+-	$(LD) $(LDFLAGS) -N -e main -Ttext 0 -o $@ $^
++	$(LD) $(LDFLAGS) -N -e main -Ttext 0x1000 -o $@ $^
+ 	$(OBJDUMP) -S $@ > $*.asm
+ 	$(OBJDUMP) -t $@ | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $*.sym
+ 
+diff -ruN src/Makefile.test src-finished/Makefile.test
+--- src/Makefile.test	2019-09-25 22:28:17.000000000 -0500
++++ src-finished/Makefile.test	2021-03-26 12:23:47.346486000 -0500
+@@ -76,7 +76,7 @@
+ LD = $(TOOLPREFIX)ld
+ OBJCOPY = $(TOOLPREFIX)objcopy
+ OBJDUMP = $(TOOLPREFIX)objdump
+-CFLAGS = -fno-pic -static -fno-builtin -fno-strict-aliasing -O2 -Wall -MD -ggdb -m32 -Werror -fno-omit-frame-pointer
++CFLAGS = -fno-pic -static -fno-builtin -fno-strict-aliasing -O2 -fno-delete-null-pointer-checks -Wall -MD -ggdb -m32 -Werror -fno-omit-frame-pointer
+ CFLAGS += $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 2>&1 && echo -fno-stack-protector)
+ ASFLAGS = -m32 -gdwarf-2 -Wa,-divide
+ # FreeBSD ld wants ``elf_i386_fbsd''
+@@ -146,7 +146,7 @@
+ ULIB = ulib.o usys.o printf.o umalloc.o
+ 
+ _%: %.o $(ULIB)
+-	$(LD) $(LDFLAGS) -N -e main -Ttext 0 -o $@ $^
++	$(LD) $(LDFLAGS) -N -e main -Ttext 0x1000 -o $@ $^
+ 	$(OBJDUMP) -S $@ > $*.asm
+ 	$(OBJDUMP) -t $@ | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $*.sym
+ 
+diff -ruN src/proc.c src-finished/proc.c
+--- src/proc.c	2019-09-25 22:28:17.000000000 -0500
++++ src-finished/proc.c	2021-03-26 12:21:49.054481000 -0500
+@@ -532,3 +532,81 @@
+     cprintf("\n");
+   }
+ }
++
++int
++mprotect(void *addr, int len){
++  struct proc *curproc = myproc();
++  int i;
++  pte_t *pte;
++
++  cprintf("we reach vm and %d is the lengths \n", len);
++
++  if((uint) addr % PGSIZE != 0){
++    // panic("mprotect: addr must be page aligned");
++    return -1;
++  }
++
++  if(len <= 0 || ((uint) addr + len * PGSIZE) > curproc->sz){
++    // panic("mprotect: addr must be in range");
++    return -1;
++  }
++
++  for(i = (uint) addr; i < ((uint) addr + len * PGSIZE); i += PGSIZE){
++    pte = walkpgdir(curproc->pgdir, (void *) i, 0);
++
++    if(!(*pte & PTE_P)){
++      // panic("mprotect: page not present");
++      return -1;
++    }
++    // if(*pte & PTE_U){
++    //   // panic("mprotect: page for kernel use only");
++    //   return -1;
++    // }
++    
++    if(pte){
++      *pte &= ~PTE_W;
++    } else {
++      return -1;
++    }
++  }
++  lcr3(V2P(curproc->pgdir)); //flush TLB 
++  return 0;
++}
++
++int
++munprotect(void *addr, int len){
++  struct proc *curproc = myproc();
++  int i;
++  pte_t *pte;
++
++  if((uint) addr % PGSIZE != 0){
++    // panic("mprotect: addr must be page aligned");
++    return -1;
++  }
++
++  if(len <= 0 || ((uint) addr + len * PGSIZE) > curproc->sz){
++    // panic("mprotect: addr must be in range");
++    return -1;
++  }
++
++  for(i = (uint) addr; i < ((uint) addr + len * PGSIZE); i += PGSIZE){
++    pte = walkpgdir(curproc->pgdir, (void *) i, 0);
++
++    if(!(*pte & PTE_P)){
++      // panic("mprotect: page not present");
++      return -1;
++    }
++    // if(*pte & PTE_U){
++    //   // panic("mprotect: page for kernel use only");
++    //   return -1;
++    // }
++    
++    if(pte){
++      *pte |= PTE_W;
++    } else {
++      return -1;
++    }
++  }
++  lcr3(V2P(curproc->pgdir)); //flush TLB 
++  return 0;
++}
+diff -ruN src/syscall.c src-finished/syscall.c
+--- src/syscall.c	2019-09-25 22:28:17.000000000 -0500
++++ src-finished/syscall.c	2021-03-25 12:21:33.785153000 -0500
+@@ -103,6 +103,8 @@
+ extern int sys_wait(void);
+ extern int sys_write(void);
+ extern int sys_uptime(void);
++extern int sys_mprotect(void);
++extern int sys_munprotect(void);
+ 
+ static int (*syscalls[])(void) = {
+ [SYS_fork]    sys_fork,
+@@ -126,6 +128,8 @@
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_mprotect]  sys_mprotect,
++[SYS_munprotect]  sys_munprotect,
+ };
+ 
+ void
+diff -ruN src/syscall.h src-finished/syscall.h
+--- src/syscall.h	2019-09-25 22:28:17.000000000 -0500
++++ src-finished/syscall.h	2021-03-25 12:19:44.798684000 -0500
+@@ -20,3 +20,5 @@
+ #define SYS_link   19
+ #define SYS_mkdir  20
+ #define SYS_close  21
++#define SYS_mprotect    22
++#define SYS_munprotect  23
+diff -ruN src/sysproc.c src-finished/sysproc.c
+--- src/sysproc.c	2019-09-25 22:28:17.000000000 -0500
++++ src-finished/sysproc.c	2021-03-25 15:45:25.922300000 -0500
+@@ -89,3 +89,26 @@
+   release(&tickslock);
+   return xticks;
+ }
++
++int
++sys_mprotect(void){
++  void *addr;
++  int len = 0;
++  cprintf("we have reached sysproc \n");
++  if(argptr(0, (void*)&addr, sizeof(void*)) < 0 || argint(1, &len) < 0){
++    return(-1);
++  }
++
++  return mprotect(addr, len);
++}
++
++int
++sys_munprotect(void){
++  void *addr;
++  int len = 0;
++  cprintf("we have reached sysproc \n");
++  if(argptr(0, (void*)&addr, sizeof(void*)) < 0 || argint(1, &len) < 0){
++    return(-1);
++  }
++  return munprotect(addr, len);
++}
+diff -ruN src/test_2.c src-finished/test_2.c
+--- src/test_2.c	2019-09-25 22:28:17.000000000 -0500
++++ src-finished/test_2.c	2021-03-26 12:23:47.366486000 -0500
+@@ -4,6 +4,7 @@
+ int
+ main(int argc, char *argv[])
+ {
++    printf(1, "XV6_TEST_OUTPUT: this should print\n");
+     volatile char *p = (char *)0;
+ 
+     *p; //page fault trap 14 should occur here
+diff -ruN src/types.h src-finished/types.h
+--- src/types.h	2019-09-25 22:28:17.000000000 -0500
++++ src-finished/types.h	2021-03-25 16:14:59.120541000 -0500
+@@ -2,3 +2,4 @@
+ typedef unsigned short ushort;
+ typedef unsigned char  uchar;
+ typedef uint pde_t;
++typedef uint pte_t;
+diff -ruN src/user.h src-finished/user.h
+--- src/user.h	2019-09-25 22:28:17.000000000 -0500
++++ src-finished/user.h	2021-03-25 12:25:24.736578000 -0500
+@@ -23,6 +23,8 @@
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++int mprotect(void *addr, int len);
++int munprotect(void *addr, int len);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff -ruN src/usys.S src-finished/usys.S
+--- src/usys.S	2019-09-25 22:28:17.000000000 -0500
++++ src-finished/usys.S	2021-03-25 12:24:14.873662000 -0500
+@@ -29,3 +29,5 @@
+ SYSCALL(sbrk)
+ SYSCALL(sleep)
+ SYSCALL(uptime)
++SYSCALL(mprotect)
++SYSCALL(munprotect)
+diff -ruN src/vm.c src-finished/vm.c
+--- src/vm.c	2019-09-25 22:28:17.000000000 -0500
++++ src-finished/vm.c	2021-03-25 16:12:46.514264000 -0500
+@@ -32,7 +32,8 @@
+ // Return the address of the PTE in page table pgdir
+ // that corresponds to virtual address va.  If alloc!=0,
+ // create any required page table pages.
+-static pte_t *
++// static 
++pte_t *
+ walkpgdir(pde_t *pgdir, const void *va, int alloc)
+ {
+   pde_t *pde;
+@@ -322,7 +323,7 @@
+ 
+   if((d = setupkvm()) == 0)
+     return 0;
+-  for(i = 0; i < sz; i += PGSIZE){
++  for(i = PGSIZE; i < sz; i += PGSIZE){
+     if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
+       panic("copyuvm: pte should exist");
+     if(!(*pte & PTE_P))
+@@ -385,6 +386,83 @@
+   return 0;
+ }
+ 
++
++// int
++// mprotect(void *addr, int len){
++//   struct proc *curproc = myproc();
++//   int i;
++//   pte_t *pte;
++
++//   cprintf("we reach vm and %d is the lengths \n", len);
++
++//   if((uint) addr % PGSIZE != 0){
++//     panic("mprotect: addr must be page aligned");
++//     return -1;
++//   }
++
++//   if(len <= 0 || ((uint) addr + len * PGSIZE) > curproc->sz){
++//     panic("mprotect: addr must be in range");
++//     return -1;
++//   }
++
++//   for(i = (uint) addr; i < ((uint) addr + len * PGSIZE); i += PGSIZE){
++//     pte = walkpgdir(curproc->pgdir, (void *) i, 0);
++
++//     if(!(*pte & PTE_P)){
++//       panic("mprotect: page not present");
++//     }
++//     if(*pte & PTE_U){
++//       panic("mprotect: page for kernel use only");
++//     }
++    
++//     if(pte){
++//       *pte &= ~PTE_W;
++//     } else {
++//       return -1;
++//     }
++//   }
++//   lcr3(V2P(curproc->pgdir)); //flush TLB 
++//   return 0;
++// }
++
++// int
++// munprotect(void *addr, int len){
++//   struct proc *curproc = myproc();
++//   int i;
++//   pte_t *pte;
++
++//   if((uint) addr % PGSIZE != 0){
++//     panic("mprotect: addr must be page aligned");
++//     return -1;
++//   }
++
++//   if(len <= 0 || ((uint) addr + len * PGSIZE + PGSIZE) > curproc->sz){
++//     panic("mprotect: addr must be in range");
++//     return -1;
++//   }
++
++//   for(i = (uint) addr; i < ((uint) addr + len * PGSIZE + PGSIZE); i += PGSIZE){
++//     pte = walkpgdir(curproc->pgdir, (void *) i, 0);
++
++//     if(!(*pte & PTE_P)){
++//       panic("mprotect: page not present");
++//       return -1;
++//     }
++//     if(*pte & PTE_U){
++//       panic("mprotect: page for kernel use only");
++//       return -1;
++//     }
++    
++//     if(pte){
++//       *pte |= ~PTE_W;
++//     } else {
++//       return -1;
++//     }
++//   }
++//   lcr3(V2P(curproc->pgdir)); //flush TLB 
++//   return 0;
++// }
++
+ //PAGEBREAK!
+ // Blank page.
+ //PAGEBREAK!
